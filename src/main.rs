@@ -35,7 +35,9 @@ fn run(cli: Cli) -> vidi::error::Result<()> {
     use vidi::{
         config::load_config,
         detector::detect,
-        launcher::{launch_fullscreen, launch_inline, launch_toggle},
+        launcher::{
+            launch_fullscreen, launch_inline, launch_media, launch_media_inline, launch_toggle,
+        },
         registry::best_tool,
         terminal::detect_capabilities,
         theme::{mapper::ThemeMapper, resolve::resolve_theme},
@@ -60,18 +62,31 @@ fn run(cli: Cli) -> vidi::error::Result<()> {
     // Resolve file path (stdin handled separately).
     let file = resolve_file(&cli.file)?;
 
+    // Follow symlinks before detection.
+    let file = canonicalize_or_original(file);
+
     // Detect file kind.
     let kind = detect(&file)?;
 
-    // Resolve tool.
+    // Determine line count for inline mode.
+    let lines = cli.lines.unwrap_or_else(|| caps.rows.max(24));
+
+    // Route audio and video through the dedicated media launcher.
+    use vidi::detector::FileKind;
+    if matches!(kind, FileKind::Audio | FileKind::Video) {
+        return if cli.inline {
+            launch_media_inline(&file, lines)
+        } else {
+            launch_media(&file, kind, &mapper, &caps)
+        };
+    }
+
+    // Resolve tool for all other kinds.
     let spec = best_tool(kind, cli.tool.as_deref()).ok_or_else(|| {
         vidi::error::VidiError::NoViewerAvailable {
             kind: kind.to_string(),
         }
     })?;
-
-    // Determine line count for inline mode.
-    let lines = cli.lines.unwrap_or_else(|| caps.rows.max(24));
 
     // Launch.
     if cli.inline {
@@ -84,9 +99,7 @@ fn run(cli: Cli) -> vidi::error::Result<()> {
         }
     } else {
         match kind {
-            vidi::detector::FileKind::LaTeX | vidi::detector::FileKind::Typst => {
-                launch_toggle(&file, &mapper, &caps)
-            }
+            FileKind::LaTeX | FileKind::Typst => launch_toggle(&file, &mapper, &caps),
             _ => launch_fullscreen(spec, &file, &mapper, &caps),
         }
     }
@@ -102,6 +115,11 @@ fn resolve_file(arg: &str) -> vidi::error::Result<PathBuf> {
         return Err(vidi::error::VidiError::FileNotFound(p));
     }
     Ok(p)
+}
+
+/// Follow symlinks via `canonicalize`; fall back to the original path on error.
+fn canonicalize_or_original(path: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&path).unwrap_or(path)
 }
 
 /// Read all of stdin into a temporary file and return its path.

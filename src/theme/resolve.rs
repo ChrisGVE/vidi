@@ -19,11 +19,9 @@ pub fn resolve_theme(
 ) -> Theme {
     let sources = [env_override, cli_override, config_theme];
 
-    for maybe_name in &sources {
-        if let Some(name) = maybe_name {
-            if let Some(theme) = find_theme(name, custom_themes) {
-                return theme;
-            }
+    for maybe_name in sources.iter().flatten() {
+        if let Some(theme) = find_theme(maybe_name, custom_themes) {
+            return theme;
         }
     }
 

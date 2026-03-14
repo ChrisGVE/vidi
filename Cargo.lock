@@ -835,6 +835,7 @@ dependencies = [
  "infer",
  "predicates",
  "serde",
+ "serde_json",
  "strip-ansi-escapes",
  "tempfile",
  "thiserror",

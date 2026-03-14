@@ -64,7 +64,7 @@ pub fn detect(path: &Path) -> Result<FileKind> {
     if let Some(kind) = detect_by_magic(path)? {
         return Ok(kind);
     }
-    Ok(detect_by_content(path)?)
+    detect_by_content(path)
 }
 
 #[cfg(test)]

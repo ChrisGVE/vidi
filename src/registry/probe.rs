@@ -65,4 +65,21 @@ mod tests {
         // A binary that cannot possibly exist.
         assert!(!which::which("__vidi_nonexistent_tool_xyz__").is_ok());
     }
+
+    /// Verify that the probe cache makes repeated lookups fast.
+    ///
+    /// The first call may hit the filesystem; the second must be cached.
+    /// Both together must complete in well under 100 ms even on slow CI.
+    #[test]
+    fn probe_cache_is_fast() {
+        let start = std::time::Instant::now();
+        let _ = resolve_tool(FileKind::Text);
+        let _ = resolve_tool(FileKind::Text); // cached
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_millis() < 100,
+            "probe took {}ms (expected < 100ms)",
+            elapsed.as_millis()
+        );
+    }
 }
