@@ -23,8 +23,8 @@ The name comes from Latin *vidi* ("I saw"), as in *veni, vidi, vici*.
   - As a previewer plugin (`vidi.yazi`) via `--inline` mode
   - As a full-screen opener via `block = true` in yazi.toml
   - Integration ships as optional config, not baked into core
-- **Language**: not yet decided — likely Rust given the ecosystem (bat, viu, yazi
-  are all Rust; fits crates.io publishing requirements from CLAUDE.md)
+- **Language**: Rust (confirmed). Fits the ecosystem (bat, viu, yazi are all Rust),
+  crates.io publishing, and CLAUDE.md standards for docs.rs documentation.
 
 ## What exists so far
 
@@ -34,8 +34,7 @@ The name comes from Latin *vidi* ("I saw"), as in *veni, vidi, vici*.
 
 ## What needs to be done next (in order)
 
-1. **Decide language** — confirm Rust with user (strongly implied by ecosystem fit
-   and CLAUDE.md standards for crates.io/docs.rs publishing)
+1. ~~**Decide language**~~ — **Rust confirmed**
 2. **Create PRD** — use template at `/Users/chris/.claude/PRD.txt`, store in
    `.taskmaster/docs/`, follow naming convention `YYYYMMDD-HHMM_vidi_0.1.0_PRD_initialization.txt`
 3. **Initialize task-master** — `task-master init`, then `task-master parse-prd`
