@@ -12,22 +12,39 @@ use std::path::Path;
 /// All file categories vidi knows how to dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FileKind {
+    /// Plain text and source code (`.txt`, `.rs`, `.py`, `.sh`, …).
     Text,
+    /// Markdown documents (`.md`, `.markdown`, `.mdx`, …).
     Markdown,
+    /// Raster and vector images (`.jpg`, `.png`, `.gif`, `.svg`, `.webp`, …).
     Image,
+    /// Video files (`.mp4`, `.mkv`, `.mov`, `.webm`, …).
     Video,
+    /// Audio files (`.mp3`, `.flac`, `.ogg`, `.wav`, …).
     Audio,
+    /// PDF documents (`.pdf`).
     Pdf,
+    /// Ebook formats (`.epub`, `.mobi`, `.djvu`, …).
     Ebook,
+    /// Office documents (`.docx`, `.odt`, `.pptx`, `.pages`, …).
     OfficeDocs,
+    /// Spreadsheet files (`.xlsx`, `.ods`, `.numbers`, …).
     Spreadsheet,
+    /// Delimited tabular data (`.csv`, `.tsv`, `.psv`).
     Csv,
+    /// LaTeX source files (`.tex`, `.sty`, `.cls`, `.bib`, …).
     LaTeX,
+    /// Typst source files (`.typ`).
     Typst,
+    /// JSON and JSON-adjacent formats (`.json`, `.jsonl`, `.json5`, …).
     Json,
+    /// YAML files (`.yaml`, `.yml`).
     Yaml,
+    /// TOML files (`.toml`).
     Toml,
+    /// Compressed archives and packages (`.tar.gz`, `.zip`, `.7z`, `.deb`, …).
     Archive,
+    /// Unrecognised binary files; rendered as a hex dump.
     Binary,
 }
 

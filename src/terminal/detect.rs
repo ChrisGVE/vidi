@@ -16,7 +16,9 @@ pub enum GraphicsProtocol {
 /// Detected capabilities of the running terminal.
 #[derive(Debug, Clone)]
 pub struct TerminalCaps {
+    /// Best graphics rendering protocol available in the current terminal.
     pub graphics: GraphicsProtocol,
+    /// Whether the terminal supports 24-bit (truecolor) ANSI color sequences.
     pub true_color: bool,
     /// Terminal width in columns (0 if unavailable).
     pub columns: u16,
