@@ -1,0 +1,11 @@
+/target
+
+# Local-only files (not for public repo)
+FIRST-PRINCIPLES.md
+handover.md
+AGENT.md
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+.taskmaster/
+tmp/
