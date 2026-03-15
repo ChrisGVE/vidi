@@ -42,7 +42,46 @@ cp -r contrib/yazi/vidi.yazi ~/.config/yazi/plugins/
 
 ### 3. Configure the previewer
 
-Add to `~/.config/yazi/yazi.toml`:
+Yazi already handles images, plain text, source code, PDF first-page thumbnails, and video thumbnails natively. vidi adds value for the formats yazi does not cover:
+
+| Format | vidi adds |
+|---|---|
+| Ebooks (epub, mobi, djvu) | Full content rendering via `epy` or `pandoc` |
+| Office documents (docx, odt, pptx) | Text extraction via `doxx` or `pandoc` |
+| Spreadsheets (xlsx, ods, numbers) | Tabular preview via `visidata` or `sc-im` |
+| CSV / tabular | Interactive view via `csvlens` or `tidy-viewer` |
+| Audio files | Metadata table via `ffprobe` |
+| LaTeX / Typst | Source + compiled PDF toggle |
+| Archives | Contents listing via `ouch` |
+
+The recommended configuration activates vidi only for these formats:
+
+```toml
+[plugin]
+prepend_previewers = [
+  { mime = "application/epub+zip",    run = "vidi" },
+  { mime = "application/x-mobipocket-ebook", run = "vidi" },
+  { mime = "image/vnd.djvu",          run = "vidi" },
+  { mime = "application/vnd.openxmlformats-officedocument.*", run = "vidi" },
+  { mime = "application/vnd.oasis.opendocument.*", run = "vidi" },
+  { mime = "application/vnd.ms-excel*", run = "vidi" },
+  { mime = "application/vnd.openxmlformats-officedocument.spreadsheetml*", run = "vidi" },
+  { name = "*.numbers",               run = "vidi" },
+  { name = "*.csv",                   run = "vidi" },
+  { name = "*.tsv",                   run = "vidi" },
+  { mime = "audio/*",                 run = "vidi" },
+  { name = "*.tex",                   run = "vidi" },
+  { name = "*.typ",                   run = "vidi" },
+  { mime = "application/zip",         run = "vidi" },
+  { mime = "application/gzip",        run = "vidi" },
+  { mime = "application/x-tar",       run = "vidi" },
+  { mime = "application/x-7z-compressed", run = "vidi" },
+  { mime = "application/x-xz",        run = "vidi" },
+  { mime = "application/zstd",        run = "vidi" },
+]
+```
+
+If you prefer vidi to handle everything and fall back to yazi's built-in previewers for anything it does not cover, use the catch-all rule instead:
 
 ```toml
 [plugin]
@@ -50,9 +89,6 @@ prepend_previewers = [
   { name = "*", run = "vidi" },
 ]
 ```
-
-This places vidi first in the previewer chain so it handles every file type.
-Yazi's built-in previewers remain as fallbacks for anything vidi does not cover.
 
 ### 4. Configure the opener (optional)
 
