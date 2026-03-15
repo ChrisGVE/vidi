@@ -1,0 +1,19 @@
+name: Publish via Homebrew Tap
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  dispatch:
+    name: dispatch formula update
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.TAP_DISPATCH_TOKEN }}
+          repository: ChrisGVE/homebrew-tap
+          event-type: formula-update
+          client-payload: '{"formula": "vidi", "tag": "${{ github.ref_name }}"}'
