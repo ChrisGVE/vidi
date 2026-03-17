@@ -83,7 +83,7 @@ fn emit_element(
     let tag = elem.value().name();
 
     match tag {
-        "script" | "style" | "head" => return,
+        "script" | "style" | "head" => {}
 
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
             out.extend_from_slice(b"\n\x1b[1m"); // bold on
