@@ -7,6 +7,52 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-03-17
+
+### Added
+
+**HTML as a first-class file kind**
+- `FileKind::Html` added for `.html`, `.htm`, `.xhtml` — previously treated as
+  plain text; now routed through its own tool chain and internal renderer
+- External tool chain: w3m → lynx → bat (html syntax) → cat
+
+**Internal renderer tier**
+- New `renderer` module providing `internal_render()` and `has_internal_renderer()`
+- `FileKind::Html` and `FileKind::Ebook` (epub) have built-in renderers; no
+  external tool required for basic rendering
+- HTML renderer: scraper-based DOM walker producing ANSI-styled text (bold
+  headings, indented code/blockquotes, bullet list items, `<br>` newlines)
+- EPUB renderer: iterates the spine via `rbook` and feeds each chapter through
+  the HTML renderer with an embedded image resolver; chapter separator emitted
+  between chapters
+- Image rendering: `chafa --format=symbols` for in-terminal images; falls back
+  to `[image: filename]` placeholder when chafa is absent
+- Fullscreen internal output: written to a temp file, paged via `less -R`
+- Inline internal output: passed through existing `truncate_ansi_safe` logic
+
+**Per-kind viewer preferences (`[viewer]` config table)**
+- New `[viewer]` table in `~/.config/vidi/config.toml`
+- Keys match `FileKind::config_key()` values; valid keys: `text`, `markdown`,
+  `image`, `video`, `audio`, `pdf`, `ebook`, `html`, `office`, `spreadsheet`,
+  `csv`, `json`, `yaml`, `toml`, `latex`, `typst`, `archive`, `binary`
+- `"internal"` selects the internal renderer for the kind
+- Any other value is a soft tool preference (falls back to registry if not
+  installed)
+- Resolution order: `--tool` flag → `viewer[kind]` config → Default (internal
+  if available, then registry)
+
+### Changed
+
+- `.html`, `.htm`, `.xhtml` extension detection moved from `FileKind::Text` to
+  `FileKind::Html`
+- Viewer dispatch in `main.rs` extended to handle `ViewerChoice` variants and
+  internal renderer paths
+
+### Dependencies
+
+- `rbook = "0.7"` — EPUB parsing
+- `scraper = "0.22"` — HTML5 DOM parsing
+
 ## [0.1.0] — 2026-03-14
 
 Initial release.

@@ -35,7 +35,8 @@ vidi -                   # read from stdin
 | Video | `.mp4` `.mkv` `.mov` | timg | mpv |
 | Audio | `.mp3` `.flac` `.ogg` `.wav` | ffprobe (metadata) | — |
 | PDF | `.pdf` | zathura | mutool, pdftotext |
-| Ebooks | `.epub` `.mobi` `.djvu` | epy | pandoc |
+| HTML | `.html` `.htm` `.xhtml` | internal renderer | w3m, lynx, bat |
+| Ebooks | `.epub` `.mobi` `.djvu` | internal renderer (epub) | epy, pandoc |
 | Office documents | `.docx` `.odt` `.pptx` | doxx | pandoc |
 | Spreadsheets | `.xlsx` `.ods` `.numbers` | visidata | sc-im |
 | CSV / tabular | `.csv` `.tsv` | csvlens | tidy-viewer, miller |
@@ -48,6 +49,8 @@ vidi -                   # read from stdin
 | Binary / hex | any unrecognised binary | hexyl | xxd |
 
 None of the preferred tools are required. vidi probes what is installed and selects the best available option. `cat` and `xxd` are the universal fallbacks for text and binary respectively.
+
+HTML and EPUB files are rendered by vidi's internal renderer — no external tool needed. Embedded images are shown via `chafa` when available, or replaced with a `[image: filename]` placeholder otherwise.
 
 ## Theming
 
@@ -85,6 +88,17 @@ All keys are optional. Missing file or missing keys fall back to defaults.
 # Active theme name. Built-in: catppuccin-mocha, catppuccin-latte,
 # catppuccin-frappe, catppuccin-macchiato.
 theme = "catppuccin-mocha"
+
+# Per-kind viewer preferences.
+# Use "internal" to force vidi's built-in renderer (HTML and EPUB only).
+# Use a tool name (e.g. "bat") as a soft preference: falls back to the registry
+# if that tool is not installed.
+# The --tool <name> CLI flag always takes precedence over this table.
+[viewer]
+epub     = "internal"   # built-in epub renderer (default)
+html     = "internal"   # built-in html renderer (default)
+markdown = "glow"       # prefer glow; falls back if not installed
+pdf      = "zathura"    # prefer zathura; falls back if not installed
 
 # Per-tool argument overrides. The key is the tool name as listed in
 # the supported formats table above.
@@ -204,6 +218,8 @@ On older Ubuntu/Debian, `bat` is installed as `batcat`. Create an alias:
 | zathura | `zathura` | — | `apt install zathura` | PDF viewer; macOS: not available |
 | mupdf-tools | `mutool` | `brew install mupdf-tools` | `apt install mupdf-tools` | PDF rendering fallback |
 | poppler | `pdftotext` | `brew install poppler` | `apt install poppler-utils` | PDF text extraction fallback |
+| w3m | `w3m` | `brew install w3m` | `apt install w3m` | HTML renderer (external fallback) |
+| lynx | `lynx` | `brew install lynx` | `apt install lynx` | HTML fallback |
 | epy | `epy` | `pip install epy-reader` | `pip install epy-reader` | Ebook reader (epub/mobi) |
 | pandoc | `pandoc` | `brew install pandoc` | `apt install pandoc` | Ebook and office doc fallback |
 | doxx | `doxx` | `brew install doxx` | `brew install doxx` | Office document viewer |
