@@ -44,11 +44,11 @@ jobs:
 
       - name: Build (cross)
         if: matrix.use_cross
-        run: cross build --release --target ${{ matrix.target }}
+        run: cross build -p vidi --release --target ${{ matrix.target }}
 
       - name: Build (cargo)
         if: ${{ !matrix.use_cross }}
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build -p vidi --release --target ${{ matrix.target }}
 
       - name: Prepare binary
         shell: bash
