@@ -25,6 +25,13 @@ pub struct Config {
     /// Additional directories to search for viewer tools beyond PATH.
     #[serde(default)]
     pub extra_search_paths: Vec<PathBuf>,
+
+    /// Per-kind viewer preferences.
+    /// Keys are `FileKind::config_key()` values (e.g. `"ebook"`, `"html"`).
+    /// Value `"internal"` selects the internal renderer;
+    /// any other value is treated as a soft tool-name preference.
+    #[serde(default)]
+    pub viewer: HashMap<String, String>,
 }
 
 impl Default for Config {
@@ -34,6 +41,7 @@ impl Default for Config {
             custom_themes: Vec::new(),
             tool_overrides: HashMap::new(),
             extra_search_paths: Vec::new(),
+            viewer: HashMap::new(),
         }
     }
 }
@@ -148,5 +156,37 @@ bat = ["--paging=always"]
     #[test]
     fn default_theme_string_is_mocha() {
         assert_eq!(default_theme(), "catppuccin-mocha");
+    }
+
+    #[test]
+    fn empty_config_has_empty_viewer_map() {
+        let config = Config::default();
+        assert!(config.viewer.is_empty());
+    }
+
+    #[test]
+    fn viewer_internal_parsed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[viewer]\nepub = \"internal\"\n").unwrap();
+
+        let config = load_config(Some(&path)).unwrap();
+        assert_eq!(
+            config.viewer.get("epub").map(|s| s.as_str()),
+            Some("internal")
+        );
+    }
+
+    #[test]
+    fn viewer_tool_name_parsed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[viewer]\npdf = \"zathura\"\n").unwrap();
+
+        let config = load_config(Some(&path)).unwrap();
+        assert_eq!(
+            config.viewer.get("pdf").map(|s| s.as_str()),
+            Some("zathura")
+        );
     }
 }
