@@ -3,21 +3,23 @@ use super::{builtin::builtin_theme, palette::Theme};
 /// Resolve the active theme from the priority-ordered override chain.
 ///
 /// Resolution order (highest priority first):
-/// 1. `env_override` — value of the `VIDI_THEME` environment variable
-/// 2. `cli_override` — value of the `--theme` CLI flag
-/// 3. `config_theme` — value from the config file
-/// 4. Default: `catppuccin-mocha`
+/// 1. `workspace_env` — value of the `CAESAR_THEME` environment variable
+/// 2. `env_override` — value of the tool-specific env var (e.g. `VIDI_THEME`)
+/// 3. `cli_override` — value of the `--theme` CLI flag
+/// 4. `config_theme` — value from the config file
+/// 5. Default: `catppuccin-mocha`
 ///
 /// For each step, `custom_themes` is searched first, then built-in themes.
 /// If a name is given but not found anywhere, the resolution falls through to
 /// the next step.  If no step yields a theme, `catppuccin-mocha` is returned.
 pub fn resolve_theme(
+    workspace_env: Option<String>,
     env_override: Option<String>,
     cli_override: Option<String>,
     config_theme: Option<String>,
     custom_themes: &[Theme],
 ) -> Theme {
-    let sources = [env_override, cli_override, config_theme];
+    let sources = [workspace_env, env_override, cli_override, config_theme];
 
     for maybe_name in sources.iter().flatten() {
         if let Some(theme) = find_theme(maybe_name, custom_themes) {
@@ -57,13 +59,26 @@ mod tests {
 
     #[test]
     fn defaults_to_mocha_when_all_none() {
-        let theme = resolve_theme(None, None, None, &[]);
+        let theme = resolve_theme(None, None, None, None, &[]);
         assert_eq!(theme.name, "catppuccin-mocha");
+    }
+
+    #[test]
+    fn workspace_env_wins_over_tool_env() {
+        let theme = resolve_theme(
+            Some("catppuccin-latte".into()),  // CAESAR_THEME
+            Some("catppuccin-frappe".into()), // VIDI_THEME
+            None,
+            None,
+            &[],
+        );
+        assert_eq!(theme.name, "catppuccin-latte");
     }
 
     #[test]
     fn env_wins_over_cli_and_config() {
         let theme = resolve_theme(
+            None,
             Some("catppuccin-latte".into()),
             Some("catppuccin-frappe".into()),
             Some("catppuccin-macchiato".into()),
@@ -76,6 +91,7 @@ mod tests {
     fn cli_wins_over_config_when_no_env() {
         let theme = resolve_theme(
             None,
+            None,
             Some("catppuccin-frappe".into()),
             Some("catppuccin-macchiato".into()),
             &[],
@@ -85,14 +101,15 @@ mod tests {
 
     #[test]
     fn config_used_when_no_env_or_cli() {
-        let theme = resolve_theme(None, None, Some("catppuccin-macchiato".into()), &[]);
+        let theme = resolve_theme(None, None, None, Some("catppuccin-macchiato".into()), &[]);
         assert_eq!(theme.name, "catppuccin-macchiato");
     }
 
     #[test]
     fn unknown_name_falls_back_to_next_source() {
-        // env has an unknown name, cli has a valid name → cli wins
+        // tool env has an unknown name, cli has a valid name → cli wins
         let theme = resolve_theme(
+            None,
             Some("no-such-theme".into()),
             Some("catppuccin-latte".into()),
             None,
@@ -107,6 +124,7 @@ mod tests {
             Some("nope".into()),
             Some("nope2".into()),
             Some("nope3".into()),
+            Some("nope4".into()),
             &[],
         );
         assert_eq!(theme.name, "catppuccin-mocha");
@@ -120,7 +138,7 @@ mod tests {
             g: 0xFF,
             b: 0xFF,
         };
-        let theme = resolve_theme(None, None, Some("catppuccin-mocha".into()), &[custom]);
+        let theme = resolve_theme(None, None, None, Some("catppuccin-mocha".into()), &[custom]);
         // Should get the custom version (white bg), not the built-in dark one
         assert_eq!(theme.bg.to_hex(), "#FFFFFF");
     }
@@ -128,7 +146,7 @@ mod tests {
     #[test]
     fn custom_theme_found_by_name() {
         let custom = dummy_theme("my-special-theme");
-        let theme = resolve_theme(None, Some("my-special-theme".into()), None, &[custom]);
+        let theme = resolve_theme(None, None, Some("my-special-theme".into()), None, &[custom]);
         assert_eq!(theme.name, "my-special-theme");
     }
 }

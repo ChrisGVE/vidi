@@ -43,8 +43,10 @@ fn run(cli: Cli) -> vidi::error::Result<()> {
 
     let config = load_config(cli.config.as_deref())?;
 
+    let workspace_env = std::env::var("CAESAR_THEME").ok();
     let env_theme = std::env::var("VIDI_THEME").ok();
     let theme = resolve_theme(
+        workspace_env,
         env_theme,
         cli.theme,
         Some(config.theme.clone()),
