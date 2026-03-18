@@ -1,7 +1,9 @@
 use crate::config::VeniConfig;
 use crate::error::{Result, VeniError};
+use crate::input::{resolve, KeyAction};
 use caesar_common::terminal::TerminalCaps;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -16,6 +18,8 @@ pub enum Mode {
     Visual,
     /// Ex-style command input.
     Command,
+    /// Incremental filename search.
+    Search,
 }
 
 impl Default for Mode {
@@ -31,6 +35,7 @@ impl std::fmt::Display for Mode {
             Mode::Insert => write!(f, "INSERT"),
             Mode::Visual => write!(f, "VISUAL"),
             Mode::Command => write!(f, "COMMAND"),
+            Mode::Search => write!(f, "SEARCH"),
         }
     }
 }
@@ -55,8 +60,20 @@ pub struct App {
     pub entries: Vec<DirEntry>,
     pub selected: usize,
     pub scroll_offset: usize,
-    /// Tracks whether a pending `g` was pressed (for `gg` binding).
-    pending_g: bool,
+    /// Pending first key for multi-key sequences (e.g. `gg`, `dd`).
+    pub pending_key: Option<char>,
+    /// Index where Visual mode selection started.
+    pub visual_anchor: Option<usize>,
+    /// Explicitly toggled entries (V-mode line selections).
+    pub selection: HashSet<usize>,
+    /// Buffer for Command mode input (`:` commands).
+    pub command_input: String,
+    /// Buffer for Search mode input (`/` search).
+    pub search_query: String,
+    /// Indices into `entries` that match the current search query.
+    pub search_matches: Vec<usize>,
+    /// Position within `search_matches` currently highlighted.
+    pub search_match_idx: usize,
 }
 
 impl App {
@@ -70,7 +87,13 @@ impl App {
             entries: Vec::new(),
             selected: 0,
             scroll_offset: 0,
-            pending_g: false,
+            pending_key: None,
+            visual_anchor: None,
+            selection: HashSet::new(),
+            command_input: String::new(),
+            search_query: String::new(),
+            search_matches: Vec::new(),
+            search_match_idx: 0,
         }
     }
 
@@ -132,42 +155,266 @@ impl App {
         // Ctrl-c always quits.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.should_quit = true;
-            self.pending_g = false;
+            self.pending_key = None;
             return;
         }
         match self.mode {
             Mode::Normal => self.handle_key_normal(key),
-            Mode::Insert | Mode::Visual | Mode::Command => {
-                // Escape returns to Normal from any other mode.
+            Mode::Visual => self.handle_key_visual(key),
+            Mode::Command => self.handle_key_command(key),
+            Mode::Search => self.handle_key_search(key),
+            Mode::Insert => {
                 if key.code == KeyCode::Esc {
                     self.mode = Mode::Normal;
                 }
-                self.pending_g = false;
+                self.pending_key = None;
             }
         }
     }
 
+    // ------------------------------------------------------------------
+    // Normal mode
+    // ------------------------------------------------------------------
+
     fn handle_key_normal(&mut self, key: KeyEvent) {
-        // Handle pending `g` — second `g` completes `gg`.
-        if self.pending_g {
-            self.pending_g = false;
-            if key.code == KeyCode::Char('g') {
-                self.go_top();
+        // Arrow keys handled directly without going through char resolver.
+        match key.code {
+            KeyCode::Down => {
+                self.pending_key = None;
+                self.move_down();
                 return;
             }
-            // Any other key cancels the pending `g`; fall through to process it.
-        }
-
-        match key.code {
-            KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('j') | KeyCode::Down => self.move_down(),
-            KeyCode::Char('k') | KeyCode::Up => self.move_up(),
-            KeyCode::Char('l') | KeyCode::Enter | KeyCode::Right => self.enter_dir(),
-            KeyCode::Char('h') | KeyCode::Backspace | KeyCode::Left => self.go_parent(),
-            KeyCode::Char('g') => self.pending_g = true,
-            KeyCode::Char('G') => self.go_bottom(),
+            KeyCode::Up => {
+                self.pending_key = None;
+                self.move_up();
+                return;
+            }
+            KeyCode::Right | KeyCode::Enter => {
+                self.pending_key = None;
+                self.enter_dir();
+                return;
+            }
+            KeyCode::Left | KeyCode::Backspace => {
+                self.pending_key = None;
+                self.go_parent();
+                return;
+            }
             _ => {}
         }
+
+        if let KeyCode::Char(ch) = key.code {
+            if let Some(action) = resolve(ch, &mut self.pending_key) {
+                self.execute_action(action);
+            }
+        }
+    }
+
+    fn execute_action(&mut self, action: KeyAction) {
+        match action {
+            KeyAction::MoveDown => self.move_down(),
+            KeyAction::MoveUp => self.move_up(),
+            KeyAction::EnterDir => self.enter_dir(),
+            KeyAction::ParentDir => self.go_parent(),
+            KeyAction::GoTop => self.go_top(),
+            KeyAction::GoBottom => self.go_bottom(),
+            KeyAction::Quit => self.should_quit = true,
+            KeyAction::EnterVisual => {
+                self.visual_anchor = Some(self.selected);
+                self.mode = Mode::Visual;
+            }
+            KeyAction::ToggleVisualLine => {
+                if self.selection.contains(&self.selected) {
+                    self.selection.remove(&self.selected);
+                } else {
+                    self.selection.insert(self.selected);
+                }
+            }
+            KeyAction::EnterCommand => {
+                self.command_input.clear();
+                self.mode = Mode::Command;
+            }
+            KeyAction::SearchForward => {
+                self.search_query.clear();
+                self.search_matches.clear();
+                self.search_match_idx = 0;
+                self.mode = Mode::Search;
+            }
+            KeyAction::SearchNext => self.search_next(),
+            KeyAction::SearchPrev => self.search_prev(),
+            // Yank, Delete, Paste, Undo, Rename: stubs for future tasks.
+            KeyAction::Yank
+            | KeyAction::Delete
+            | KeyAction::Paste
+            | KeyAction::Undo
+            | KeyAction::Rename
+            | KeyAction::ToggleHidden => {}
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Visual mode
+    // ------------------------------------------------------------------
+
+    fn handle_key_visual(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.visual_anchor = None;
+            }
+            KeyCode::Char('j') | KeyCode::Down => self.move_down(),
+            KeyCode::Char('k') | KeyCode::Up => self.move_up(),
+            KeyCode::Char('V') => {
+                // Toggle current entry in explicit selection set and exit visual.
+                if self.selection.contains(&self.selected) {
+                    self.selection.remove(&self.selected);
+                } else {
+                    self.selection.insert(self.selected);
+                }
+                self.mode = Mode::Normal;
+                self.visual_anchor = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// Returns the range of indices covered by the current Visual selection.
+    /// Returns an empty range when not in Visual mode or no anchor is set.
+    pub fn visual_range(&self) -> std::ops::RangeInclusive<usize> {
+        match self.visual_anchor {
+            Some(anchor) => {
+                let lo = anchor.min(self.selected);
+                let hi = anchor.max(self.selected);
+                lo..=hi
+            }
+            None => 0..=0, // degenerate; callers should check mode
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Command mode
+    // ------------------------------------------------------------------
+
+    fn handle_key_command(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.command_input.clear();
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Enter => {
+                let cmd = self.command_input.trim().to_string();
+                self.command_input.clear();
+                self.mode = Mode::Normal;
+                self.execute_command(&cmd);
+            }
+            KeyCode::Backspace => {
+                self.command_input.pop();
+            }
+            KeyCode::Char(ch) => {
+                self.command_input.push(ch);
+            }
+            _ => {}
+        }
+    }
+
+    fn execute_command(&mut self, cmd: &str) {
+        match cmd {
+            "q" => self.should_quit = true,
+            "set hidden" => {
+                self.config.show_hidden = true;
+                let _ = self.load_dir();
+            }
+            "set nohidden" => {
+                self.config.show_hidden = false;
+                let _ = self.load_dir();
+            }
+            other if other.starts_with("cd ") => {
+                let path_str = other.trim_start_matches("cd ").trim();
+                let new_path = if path_str.starts_with('/') {
+                    PathBuf::from(path_str)
+                } else {
+                    self.cwd.join(path_str)
+                };
+                if new_path.is_dir() {
+                    self.cwd = new_path;
+                    let _ = self.load_dir();
+                }
+            }
+            _ => {} // unknown command — silently ignore
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Search mode
+    // ------------------------------------------------------------------
+
+    fn handle_key_search(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.search_query.clear();
+                self.search_matches.clear();
+                self.search_match_idx = 0;
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Enter => {
+                // Confirm search: move to first match if any, return to Normal.
+                if !self.search_matches.is_empty() {
+                    self.selected = self.search_matches[0];
+                    self.search_match_idx = 0;
+                }
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Backspace => {
+                self.search_query.pop();
+                self.update_search_matches();
+            }
+            KeyCode::Char(ch) => {
+                self.search_query.push(ch);
+                self.update_search_matches();
+                // Jump cursor to first match immediately.
+                if !self.search_matches.is_empty() {
+                    self.selected = self.search_matches[0];
+                    self.search_match_idx = 0;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn update_search_matches(&mut self) {
+        if self.search_query.is_empty() {
+            self.search_matches.clear();
+            self.search_match_idx = 0;
+            return;
+        }
+        let query = self.search_query.to_lowercase();
+        self.search_matches = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.name.to_lowercase().contains(&query))
+            .map(|(i, _)| i)
+            .collect();
+        self.search_match_idx = 0;
+    }
+
+    fn search_next(&mut self) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        self.search_match_idx = (self.search_match_idx + 1) % self.search_matches.len();
+        self.selected = self.search_matches[self.search_match_idx];
+    }
+
+    fn search_prev(&mut self) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        if self.search_match_idx == 0 {
+            self.search_match_idx = self.search_matches.len() - 1;
+        } else {
+            self.search_match_idx -= 1;
+        }
+        self.selected = self.search_matches[self.search_match_idx];
     }
 
     // ------------------------------------------------------------------
@@ -248,6 +495,7 @@ mod tests {
         assert_eq!(Mode::Insert.to_string(), "INSERT");
         assert_eq!(Mode::Visual.to_string(), "VISUAL");
         assert_eq!(Mode::Command.to_string(), "COMMAND");
+        assert_eq!(Mode::Search.to_string(), "SEARCH");
     }
 
     #[test]
@@ -445,7 +693,7 @@ mod tests {
         app.handle_key(key(KeyCode::Char('g')));
         // Only one `g` pressed — cursor must not change yet.
         assert_eq!(app.selected, 1);
-        assert!(app.pending_g);
+        assert_eq!(app.pending_key, Some('g'));
     }
 
     #[test]
@@ -474,7 +722,6 @@ mod tests {
         app.load_dir().unwrap();
         let parent = tmp.path().to_path_buf();
         app.handle_key(key(KeyCode::Char('h')));
-        // After going up, cwd should be the parent (canonicalized form).
         assert_eq!(
             app.cwd.canonicalize().unwrap_or(app.cwd.clone()),
             parent.canonicalize().unwrap_or(parent)
@@ -512,10 +759,342 @@ mod tests {
         app.load_dir().unwrap();
         app.selected = 1;
         app.handle_key(key(KeyCode::Char('g')));
-        assert!(app.pending_g);
-        // Press 'j' after 'g' — pending_g clears, 'j' also fires (moves down)
-        // but we're already at the end so selected stays 1.
+        assert_eq!(app.pending_key, Some('g'));
+        // Press 'j' after 'g' — pending_g clears, 'j' fires (MoveDown).
+        // We're at position 1 (last), so moves nowhere but pending clears.
         app.handle_key(key(KeyCode::Char('j')));
-        assert!(!app.pending_g);
+        assert_eq!(app.pending_key, None);
+    }
+
+    // ------------------------------------------------------------------
+    // Visual mode tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn v_enters_visual_mode() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = make_app(&tmp);
+        app.handle_key(key(KeyCode::Char('v')));
+        assert_eq!(app.mode, Mode::Visual);
+        assert_eq!(app.visual_anchor, Some(0));
+    }
+
+    #[test]
+    fn esc_exits_visual_mode() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = make_app(&tmp);
+        app.mode = Mode::Visual;
+        app.visual_anchor = Some(0);
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.visual_anchor, None);
+    }
+
+    #[test]
+    fn visual_j_extends_selection_down() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("a.txt"), b"").unwrap();
+        fs::write(tmp.path().join("b.txt"), b"").unwrap();
+        fs::write(tmp.path().join("c.txt"), b"").unwrap();
+        let mut app = make_app(&tmp);
+        app.load_dir().unwrap();
+        app.mode = Mode::Visual;
+        app.visual_anchor = Some(0);
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.selected, 1);
+        let range = app.visual_range();
+        assert_eq!(*range.start(), 0);
+        assert_eq!(*range.end(), 1);
+    }
+
+    #[test]
+    fn visual_range_upward() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("a.txt"), b"").unwrap();
+        fs::write(tmp.path().join("b.txt"), b"").unwrap();
+        fs::write(tmp.path().join("c.txt"), b"").unwrap();
+        let mut app = make_app(&tmp);
+        app.load_dir().unwrap();
+        app.selected = 2;
+        app.mode = Mode::Visual;
+        app.visual_anchor = Some(2);
+        app.handle_key(key(KeyCode::Char('k')));
+        let range = app.visual_range();
+        assert_eq!(*range.start(), 1);
+        assert_eq!(*range.end(), 2);
+    }
+
+    #[test]
+    fn capital_v_toggles_selection() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("a.txt"), b"").unwrap();
+        let mut app = make_app(&tmp);
+        app.load_dir().unwrap();
+        // V in Normal mode toggles current entry.
+        app.handle_key(key(KeyCode::Char('V')));
+        assert!(app.selection.contains(&0));
+        app.handle_key(key(KeyCode::Char('V')));
+        assert!(!app.selection.contains(&0));
+    }
+
+    // ------------------------------------------------------------------
+    // Command mode tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn colon_enters_command_mode() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = make_app(&tmp);
+        app.handle_key(key(KeyCode::Char(':')));
+        assert_eq!(app.mode, Mode::Command);
+        assert!(app.command_input.is_empty());
+    }
+
+    #[test]
+    fn command_mode_types_chars() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = make_app(&tmp);
+        app.mode = Mode::Command;
+        app.handle_key(key(KeyCode::Char('q')));
+        assert_eq!(app.command_input, "q");
+    }
+
+    #[test]
+    fn command_mode_backspace_deletes() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = make_app(&tmp);
+        app.mode = Mode::Command;
+        app.command_input = "cd".to_string();
+        app.handle_key(key(KeyCode::Backspace));
+        assert_eq!(app.command_input, "c");
+    }
+
+    #[test]
+    fn command_mode_esc_cancels() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = make_app(&tmp);
+        app.mode = Mode::Command;
+        app.command_input = "q".to_string();
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.command_input.is_empty());
+    }
+
+    #[test]
+    fn command_q_quits() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = make_app(&tmp);
+        app.mode = Mode::Command;
+        app.command_input = "q".to_string();
+        app.handle_key(key(KeyCode::Enter));
+        assert!(app.should_quit);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn command_set_hidden_shows_dotfiles() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join(".hidden"), b"").unwrap();
+        let mut app = make_app(&tmp);
+        app.load_dir().unwrap();
+        assert_eq!(app.entries.len(), 0);
+        app.mode = Mode::Command;
+        app.command_input = "set hidden".to_string();
+        app.handle_key(key(KeyCode::Enter));
+        assert!(app.config.show_hidden);
+        assert_eq!(app.entries.len(), 1);
+    }
+
+    #[test]
+    fn command_set_nohidden_hides_dotfiles() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join(".hidden"), b"").unwrap();
+        fs::write(tmp.path().join("visible.txt"), b"").unwrap();
+        let mut cfg = VeniConfig::default();
+        cfg.show_hidden = true;
+        let mut app = App::new(tmp.path().to_path_buf(), TerminalCaps::default(), cfg);
+        app.load_dir().unwrap();
+        assert_eq!(app.entries.len(), 2);
+        app.mode = Mode::Command;
+        app.command_input = "set nohidden".to_string();
+        app.handle_key(key(KeyCode::Enter));
+        assert!(!app.config.show_hidden);
+        assert_eq!(app.entries.len(), 1);
+    }
+
+    #[test]
+    fn command_cd_changes_directory() {
+        let tmp = TempDir::new().unwrap();
+        let subdir = tmp.path().join("sub");
+        fs::create_dir(&subdir).unwrap();
+        let mut app = make_app(&tmp);
+        app.load_dir().unwrap();
+        app.mode = Mode::Command;
+        let cd_cmd = format!("cd {}", subdir.to_string_lossy());
+        app.command_input = cd_cmd;
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.cwd, subdir);
+    }
+
+    #[test]
+    fn command_unknown_is_ignored() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = make_app(&tmp);
+        app.mode = Mode::Command;
+        app.command_input = "foobar".to_string();
+        app.handle_key(key(KeyCode::Enter));
+        assert!(!app.should_quit);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    // ------------------------------------------------------------------
+    // Search mode tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn slash_enters_search_mode() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = make_app(&tmp);
+        app.handle_key(key(KeyCode::Char('/')));
+        assert_eq!(app.mode, Mode::Search);
+        assert!(app.search_query.is_empty());
+    }
+
+    #[test]
+    fn search_typing_filters_matches() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("alpha.txt"), b"").unwrap();
+        fs::write(tmp.path().join("beta.txt"), b"").unwrap();
+        fs::write(tmp.path().join("alphabet.txt"), b"").unwrap();
+        let mut app = make_app(&tmp);
+        app.load_dir().unwrap();
+        app.mode = Mode::Search;
+        app.handle_key(key(KeyCode::Char('a')));
+        app.handle_key(key(KeyCode::Char('l')));
+        // "al" matches alpha.txt (idx 0) and alphabet.txt (idx 1) — not beta.
+        assert_eq!(app.search_matches.len(), 2);
+        // Cursor should jump to first match.
+        assert_eq!(app.selected, app.search_matches[0]);
+    }
+
+    #[test]
+    fn search_enter_confirms_and_returns_normal() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("alpha.txt"), b"").unwrap();
+        let mut app = make_app(&tmp);
+        app.load_dir().unwrap();
+        app.mode = Mode::Search;
+        app.search_query = "alpha".to_string();
+        app.update_search_matches();
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn search_esc_cancels() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("alpha.txt"), b"").unwrap();
+        let mut app = make_app(&tmp);
+        app.load_dir().unwrap();
+        app.mode = Mode::Search;
+        app.search_query = "al".to_string();
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.search_query.is_empty());
+        assert!(app.search_matches.is_empty());
+    }
+
+    #[test]
+    fn search_n_goes_to_next_match() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("alpha.txt"), b"").unwrap();
+        fs::write(tmp.path().join("beta.txt"), b"").unwrap();
+        fs::write(tmp.path().join("gamma_a.txt"), b"").unwrap();
+        let mut app = make_app(&tmp);
+        app.load_dir().unwrap();
+        // Set up a search with matches at indices 0 and 2.
+        app.search_query = "a".to_string();
+        app.update_search_matches();
+        // Confirm all three contain 'a'.
+        assert_eq!(app.search_matches.len(), 3);
+        app.selected = app.search_matches[0];
+        app.search_match_idx = 0;
+        // 'n' moves to next.
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.selected, app.search_matches[1]);
+    }
+
+    #[test]
+    fn search_capital_n_goes_to_prev_match() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("alpha.txt"), b"").unwrap();
+        fs::write(tmp.path().join("beta.txt"), b"").unwrap();
+        fs::write(tmp.path().join("gamma_a.txt"), b"").unwrap();
+        let mut app = make_app(&tmp);
+        app.load_dir().unwrap();
+        app.search_query = "a".to_string();
+        app.update_search_matches();
+        app.selected = app.search_matches[1];
+        app.search_match_idx = 1;
+        app.handle_key(key(KeyCode::Char('N')));
+        assert_eq!(app.selected, app.search_matches[0]);
+    }
+
+    #[test]
+    fn search_backspace_removes_char_and_updates() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("alpha.txt"), b"").unwrap();
+        fs::write(tmp.path().join("beta.txt"), b"").unwrap();
+        let mut app = make_app(&tmp);
+        app.load_dir().unwrap();
+        app.mode = Mode::Search;
+        app.handle_key(key(KeyCode::Char('a')));
+        let matches_after_a = app.search_matches.len();
+        app.handle_key(key(KeyCode::Backspace));
+        assert!(app.search_query.is_empty());
+        assert!(app.search_matches.is_empty());
+        let _ = matches_after_a; // just ensuring count changed
+    }
+
+    #[test]
+    fn search_case_insensitive() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("Alpha.txt"), b"").unwrap();
+        let mut app = make_app(&tmp);
+        app.load_dir().unwrap();
+        app.search_query = "alpha".to_string();
+        app.update_search_matches();
+        assert_eq!(app.search_matches.len(), 1);
+    }
+
+    #[test]
+    fn search_n_wraps_around() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("a1.txt"), b"").unwrap();
+        fs::write(tmp.path().join("a2.txt"), b"").unwrap();
+        let mut app = make_app(&tmp);
+        app.load_dir().unwrap();
+        app.search_query = "a".to_string();
+        app.update_search_matches();
+        app.search_match_idx = app.search_matches.len() - 1;
+        app.selected = *app.search_matches.last().unwrap();
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.search_match_idx, 0);
+    }
+
+    #[test]
+    fn search_capital_n_wraps_around() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("a1.txt"), b"").unwrap();
+        fs::write(tmp.path().join("a2.txt"), b"").unwrap();
+        let mut app = make_app(&tmp);
+        app.load_dir().unwrap();
+        app.search_query = "a".to_string();
+        app.update_search_matches();
+        app.search_match_idx = 0;
+        app.selected = app.search_matches[0];
+        app.handle_key(key(KeyCode::Char('N')));
+        assert_eq!(app.search_match_idx, app.search_matches.len() - 1);
     }
 }

@@ -1,6 +1,7 @@
 pub mod app;
 pub mod config;
 pub mod error;
+pub mod input;
 pub mod ui;
 
 pub use error::{Result, VeniError};
