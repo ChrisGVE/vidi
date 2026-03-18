@@ -1,5 +1,6 @@
 use crate::app::{App, DirEntry, Mode};
 use crate::pane::Pane;
+use caesar_common::terminal::MultiplexerKind;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -98,8 +99,15 @@ fn render_pane(f: &mut Frame, app: &mut App, pane_idx: usize, area: Rect) {
     };
 
     let pane: &Pane = &app.panes[pane_idx];
-    let entries: &[DirEntry] = &pane.entries;
+    let all_entries: &[DirEntry] = &pane.entries;
     let selected = pane.selected;
+    let scroll_offset = pane.scroll_offset;
+
+    // Virtual scrolling: only render the visible slice.
+    let visible_height = inner.height as usize;
+    let end = (scroll_offset + visible_height).min(all_entries.len());
+    let entries = &all_entries[scroll_offset..end];
+
     let selection = if is_active {
         &app.selection
     } else {
@@ -118,7 +126,9 @@ fn render_pane(f: &mut Frame, app: &mut App, pane_idx: usize, area: Rect) {
     let items: Vec<ListItem> = entries
         .iter()
         .enumerate()
-        .map(|(i, e)| {
+        .map(|(slot, e)| {
+            // Absolute index into all_entries.
+            let i = scroll_offset + slot;
             let line = if is_renaming && i == selected {
                 // Show rename buffer for the currently selected entry.
                 format_rename_entry(e, rename_buffer.as_deref().unwrap_or(""))
@@ -150,8 +160,10 @@ fn render_pane(f: &mut Frame, app: &mut App, pane_idx: usize, area: Rect) {
         )
         .highlight_symbol("> ");
 
+    // ListState selection is relative to the visible slice.
+    let visible_selected = selected.saturating_sub(scroll_offset);
     let mut state = ListState::default();
-    state.select(Some(selected));
+    state.select(Some(visible_selected));
     f.render_stateful_widget(list, inner, &mut state);
 }
 
@@ -226,6 +238,20 @@ fn icon_for_entry(entry: &DirEntry) -> &'static str {
 
 fn format_entry(entry: &DirEntry) -> Line<'static> {
     let icon = icon_for_entry(entry);
+
+    if entry.is_symlink {
+        let target_str = entry
+            .symlink_target
+            .as_ref()
+            .map(|t| t.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "?".to_string());
+        let name = format!("{} {} \u{2192} {}", icon, entry.name, target_str);
+        let style = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+        return Line::from(Span::styled(name, style));
+    }
+
     let name = if entry.is_dir {
         format!("{} {}/", icon, entry.name)
     } else {
@@ -328,18 +354,27 @@ fn draw_normal_status(f: &mut Frame, app: &App, area: Rect) {
     let path_str = app.active().cwd.to_string_lossy().into_owned();
     let mode_str = app.mode.to_string();
 
+    // Build a multiplexer suffix, e.g. " [tmux]".
+    let mux_suffix = match app.multiplexer.kind {
+        MultiplexerKind::Tmux => " [tmux]".to_string(),
+        MultiplexerKind::Zellij => " [zellij]".to_string(),
+        MultiplexerKind::Cmux => " [screen]".to_string(),
+        MultiplexerKind::None => String::new(),
+    };
+    let right_str = format!("{}{}", mux_suffix, mode_str);
+
     let inner_width = area.width as usize;
-    let mode_len = mode_str.len();
-    let path_display = if path_str.len() + mode_len + 1 > inner_width {
-        let keep = inner_width.saturating_sub(mode_len + 4);
+    let right_len = right_str.len();
+    let path_display = if path_str.len() + right_len + 1 > inner_width {
+        let keep = inner_width.saturating_sub(right_len + 4);
         let start = path_str.len().saturating_sub(keep);
         format!("...{}", &path_str[start..])
     } else {
         path_str.clone()
     };
 
-    let padding = inner_width.saturating_sub(path_display.len() + mode_len);
-    let status_line = format!("{}{}{}", path_display, " ".repeat(padding), mode_str);
+    let padding = inner_width.saturating_sub(path_display.len() + right_len);
+    let status_line = format!("{}{}{}", path_display, " ".repeat(padding), right_str);
 
     let status = Paragraph::new(status_line).style(
         Style::default()
@@ -386,6 +421,8 @@ mod tests {
             name: "docs".to_string(),
             path: "/tmp/docs".into(),
             is_dir: true,
+            is_symlink: false,
+            symlink_target: None,
             size: 0,
             modified: None,
         };
@@ -400,6 +437,8 @@ mod tests {
             name: "readme.txt".to_string(),
             path: "/tmp/readme.txt".into(),
             is_dir: false,
+            is_symlink: false,
+            symlink_target: None,
             size: 1_024,
             modified: None,
         };
@@ -418,6 +457,8 @@ mod tests {
             name: "bin".to_string(),
             path: "/usr/bin".into(),
             is_dir: true,
+            is_symlink: false,
+            symlink_target: None,
             size: 4096,
             modified: None,
         };
@@ -456,6 +497,8 @@ mod tests {
             name: "mydir".to_string(),
             path: "/tmp/mydir".into(),
             is_dir: true,
+            is_symlink: false,
+            symlink_target: None,
             size: 0,
             modified: None,
         };
@@ -469,6 +512,8 @@ mod tests {
             name: "main.rs".to_string(),
             path: "/tmp/main.rs".into(),
             is_dir: false,
+            is_symlink: false,
+            symlink_target: None,
             size: 0,
             modified: None,
         };
@@ -482,6 +527,8 @@ mod tests {
             name: "weird.xyz".to_string(),
             path: "/tmp/weird.xyz".into(),
             is_dir: false,
+            is_symlink: false,
+            symlink_target: None,
             size: 0,
             modified: None,
         };
@@ -495,6 +542,8 @@ mod tests {
             name: "Makefile".to_string(),
             path: "/tmp/Makefile".into(),
             is_dir: false,
+            is_symlink: false,
+            symlink_target: None,
             size: 0,
             modified: None,
         };
@@ -508,6 +557,8 @@ mod tests {
             name: "main.rs".to_string(),
             path: "/src/main.rs".into(),
             is_dir: false,
+            is_symlink: false,
+            symlink_target: None,
             size: 0,
             modified: None,
         };
@@ -526,6 +577,8 @@ mod tests {
             name: "old.txt".to_string(),
             path: "/tmp/old.txt".into(),
             is_dir: false,
+            is_symlink: false,
+            symlink_target: None,
             size: 0,
             modified: None,
         };
@@ -533,5 +586,59 @@ mod tests {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("new_name"), "rename buffer must appear");
         assert!(text.contains('|'), "cursor indicator must appear");
+    }
+
+    // ------------------------------------------------------------------
+    // Symlink display tests (task 35)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn format_entry_symlink_shows_arrow_and_target() {
+        let entry = DirEntry {
+            name: "mylink".to_string(),
+            path: "/tmp/mylink".into(),
+            is_dir: false,
+            is_symlink: true,
+            symlink_target: Some("/real/target".into()),
+            size: 0,
+            modified: None,
+        };
+        let line = format_entry(&entry);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("mylink"),
+            "symlink entry must contain the link name"
+        );
+        // Unicode right arrow U+2192.
+        assert!(
+            text.contains('\u{2192}'),
+            "symlink entry must contain the arrow character"
+        );
+        assert!(
+            text.contains("/real/target"),
+            "symlink entry must contain the target path"
+        );
+    }
+
+    #[test]
+    fn format_entry_symlink_style_is_cyan() {
+        let entry = DirEntry {
+            name: "link".to_string(),
+            path: "/tmp/link".into(),
+            is_dir: false,
+            is_symlink: true,
+            symlink_target: Some("/somewhere".into()),
+            size: 0,
+            modified: None,
+        };
+        let line = format_entry(&entry);
+        // All spans for symlinks should use Cyan foreground.
+        for span in &line.spans {
+            assert_eq!(
+                span.style.fg,
+                Some(Color::Cyan),
+                "symlink spans must use Cyan color"
+            );
+        }
     }
 }

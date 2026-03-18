@@ -74,10 +74,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         if event::poll(Duration::from_millis(100))
             .map_err(|e| VeniError::Terminal(e.to_string()))?
         {
-            if let Event::Key(key) =
-                event::read().map_err(|e| VeniError::Terminal(e.to_string()))?
-            {
-                app.handle_key(key);
+            match event::read().map_err(|e| VeniError::Terminal(e.to_string()))? {
+                Event::Key(key) => app.handle_key(key),
+                Event::Resize(cols, rows) => {
+                    app.caps.columns = cols;
+                    app.caps.rows = rows;
+                }
+                _ => {}
             }
         }
 

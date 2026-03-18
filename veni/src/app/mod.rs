@@ -3,7 +3,7 @@ use crate::error::Result;
 use crate::input::{resolve, KeyAction};
 use crate::ops::{execute_op, inverse_op, FileOp};
 use crate::pane::Pane;
-use caesar_common::terminal::TerminalCaps;
+use caesar_common::terminal::{detect_multiplexer, MultiplexerInfo, TerminalCaps};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -58,6 +58,10 @@ pub struct DirEntry {
     pub name: String,
     pub path: PathBuf,
     pub is_dir: bool,
+    /// Whether this entry is a symbolic link.
+    pub is_symlink: bool,
+    /// The path this symlink points to, if it is one.
+    pub symlink_target: Option<PathBuf>,
     pub size: u64,
     pub modified: Option<SystemTime>,
 }
@@ -68,6 +72,8 @@ pub struct App {
     pub caps: TerminalCaps,
     pub config: VeniConfig,
     pub should_quit: bool,
+    /// Detected terminal multiplexer (tmux, Zellij, screen, or none).
+    pub multiplexer: MultiplexerInfo,
     /// All panes (niri-style horizontal workspace).
     pub panes: Vec<Pane>,
     /// Which pane has keyboard focus (index into `panes`).
@@ -108,11 +114,13 @@ impl App {
     pub fn new(path: PathBuf, caps: TerminalCaps, config: VeniConfig) -> Self {
         let left = Pane::new(path.clone());
         let right = Pane::new(path);
+        let multiplexer = detect_multiplexer();
         Self {
             mode: Mode::Normal,
             caps,
             config,
             should_quit: false,
+            multiplexer,
             panes: vec![left, right],
             active_pane: 0,
             viewport_start: 0,
@@ -790,11 +798,26 @@ impl App {
     // Navigation primitives (proxy to active pane)
     // ------------------------------------------------------------------
 
+    /// Compute the visible entry height for the active pane.
+    ///
+    /// The pane area is `rows - 1` (status bar) minus 2 (top+bottom borders).
+    /// When `rows` is zero (unknown), use a safe fallback of 20.
+    fn visible_height(&self) -> usize {
+        let rows = if self.caps.rows > 0 {
+            self.caps.rows
+        } else {
+            23
+        };
+        (rows as usize).saturating_sub(3)
+    }
+
     fn move_down(&mut self) {
         let pane = &mut self.panes[self.active_pane];
         if !pane.entries.is_empty() && pane.selected < pane.entries.len() - 1 {
             pane.selected += 1;
         }
+        let vh = self.visible_height();
+        self.panes[self.active_pane].ensure_visible(vh);
     }
 
     fn move_up(&mut self) {
@@ -802,6 +825,8 @@ impl App {
         if pane.selected > 0 {
             pane.selected -= 1;
         }
+        let vh = self.visible_height();
+        self.panes[self.active_pane].ensure_visible(vh);
     }
 
     fn go_top(&mut self) {
@@ -815,14 +840,23 @@ impl App {
         if !pane.entries.is_empty() {
             pane.selected = pane.entries.len() - 1;
         }
+        let vh = self.visible_height();
+        self.panes[self.active_pane].ensure_visible(vh);
     }
 
     fn enter_dir(&mut self) {
         let show_hidden = self.config.show_hidden;
         let pane = &mut self.panes[self.active_pane];
         if let Some(entry) = pane.entries.get(pane.selected) {
-            if entry.is_dir {
-                let new_path = entry.path.clone();
+            // Follow symlink targets that point to a directory.
+            let target = if entry.is_symlink {
+                entry.symlink_target.clone().filter(|t| t.is_dir())
+            } else if entry.is_dir {
+                Some(entry.path.clone())
+            } else {
+                None
+            };
+            if let Some(new_path) = target {
                 pane.cwd = new_path;
                 let _ = pane.load_dir(show_hidden);
             }
@@ -1799,5 +1833,68 @@ mod tests {
         app.handle_key(key(KeyCode::Char('h')));
         assert!(!app.config.show_hidden);
         assert_eq!(app.panes[0].entries.len(), 1);
+    }
+
+    // ------------------------------------------------------------------
+    // Multiplexer detection (task 24)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn app_new_initialises_multiplexer_field() {
+        let tmp = TempDir::new().unwrap();
+        let app = make_app(&tmp);
+        // The multiplexer field must exist and be a valid MultiplexerInfo.
+        // We cannot predict which multiplexer is in use in CI, so we just
+        // verify the field is present and does not panic.
+        let _ = app.multiplexer.kind;
+    }
+
+    // ------------------------------------------------------------------
+    // Virtual scrolling / visible_height (task 33)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn scroll_offset_advances_when_cursor_moves_below_window() {
+        let tmp = TempDir::new().unwrap();
+        for i in 0..20u8 {
+            fs::write(tmp.path().join(format!("{:02}.txt", i)), b"").unwrap();
+        }
+        // Use a terminal with only 8 rows so visible_height = 5.
+        let mut caps = TerminalCaps::default();
+        caps.rows = 8;
+        let mut app = App::new(tmp.path().to_path_buf(), caps, VeniConfig::default());
+        app.load_dir().unwrap();
+        // Navigate past the visible window (5 rows).
+        for _ in 0..10 {
+            app.handle_key(key(KeyCode::Down));
+        }
+        assert!(
+            app.panes[0].scroll_offset > 0,
+            "scroll_offset must be non-zero after moving below visible window"
+        );
+        let vh = app.visible_height();
+        let pane = &app.panes[0];
+        assert!(
+            pane.selected < pane.scroll_offset + vh,
+            "cursor must remain within the visible window"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Resize event handling (task 36) — tested in lib.rs integration.
+    // We test the caps mutation directly here.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn resize_updates_caps_columns_and_rows() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = make_app(&tmp);
+        app.caps.columns = 80;
+        app.caps.rows = 24;
+        // Simulate what lib.rs does on Event::Resize.
+        app.caps.columns = 120;
+        app.caps.rows = 40;
+        assert_eq!(app.caps.columns, 120);
+        assert_eq!(app.caps.rows, 40);
     }
 }

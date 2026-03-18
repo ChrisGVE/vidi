@@ -56,6 +56,20 @@ impl Pane {
                 continue;
             }
 
+            let full_path = entry.path();
+            // Use symlink_metadata so symlinks are not followed for type detection.
+            let symlink_meta = std::fs::symlink_metadata(&full_path).ok();
+            let is_symlink = symlink_meta
+                .as_ref()
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false);
+            let symlink_target = if is_symlink {
+                std::fs::read_link(&full_path).ok()
+            } else {
+                None
+            };
+
+            // For size/modified, follow the symlink (use metadata, not symlink_metadata).
             let meta = entry.metadata().ok();
             let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
             let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
@@ -63,8 +77,10 @@ impl Pane {
 
             entries.push(DirEntry {
                 name,
-                path: entry.path(),
+                path: full_path,
                 is_dir,
+                is_symlink,
+                symlink_target,
                 size,
                 modified,
             });
@@ -128,11 +144,34 @@ impl Pane {
 
     fn enter_dir(&mut self, show_hidden: bool) {
         if let Some(entry) = self.entries.get(self.selected) {
-            if entry.is_dir {
-                let new_path = entry.path.clone();
+            // Follow symlink targets that point to a directory.
+            let target = if entry.is_symlink {
+                entry.symlink_target.clone().filter(|t| t.is_dir())
+            } else if entry.is_dir {
+                Some(entry.path.clone())
+            } else {
+                None
+            };
+            if let Some(new_path) = target {
                 self.cwd = new_path;
                 let _ = self.load_dir(show_hidden);
             }
+        }
+    }
+
+    /// Adjust `scroll_offset` so that `selected` is within the visible window
+    /// of `visible_height` rows.
+    pub fn ensure_visible(&mut self, visible_height: usize) {
+        if visible_height == 0 {
+            return;
+        }
+        // Scroll down if cursor is below the visible window.
+        if self.selected >= self.scroll_offset + visible_height {
+            self.scroll_offset = self.selected + 1 - visible_height;
+        }
+        // Scroll up if cursor is above the visible window.
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
         }
     }
 
@@ -304,5 +343,135 @@ mod tests {
         let mut pane = make_pane(&tmp);
         pane.load_dir(false).unwrap();
         assert!(pane.current_entry().is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // Symlink tests
+    // ------------------------------------------------------------------
+
+    #[cfg(unix)]
+    #[test]
+    fn load_dir_detects_symlink_to_file() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("real.txt");
+        fs::write(&target, b"hello").unwrap();
+        std::os::unix::fs::symlink(&target, tmp.path().join("link.txt")).unwrap();
+        let mut pane = make_pane(&tmp);
+        pane.load_dir(false).unwrap();
+        let link = pane.entries.iter().find(|e| e.name == "link.txt").unwrap();
+        assert!(link.is_symlink, "link.txt must be detected as a symlink");
+        assert_eq!(
+            link.symlink_target.as_deref(),
+            Some(target.as_path()),
+            "symlink target must be the real file path"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_dir_detects_symlink_to_dir() {
+        let tmp = TempDir::new().unwrap();
+        let target_dir = tmp.path().join("real_dir");
+        fs::create_dir(&target_dir).unwrap();
+        std::os::unix::fs::symlink(&target_dir, tmp.path().join("link_dir")).unwrap();
+        let mut pane = make_pane(&tmp);
+        pane.load_dir(false).unwrap();
+        let link = pane.entries.iter().find(|e| e.name == "link_dir").unwrap();
+        assert!(link.is_symlink, "link_dir must be detected as a symlink");
+        assert_eq!(
+            link.symlink_target.as_deref(),
+            Some(target_dir.as_path()),
+            "symlink target must be the real directory path"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn navigate_enter_follows_symlink_to_dir() {
+        let tmp = TempDir::new().unwrap();
+        let real_dir = tmp.path().join("real_dir");
+        fs::create_dir(&real_dir).unwrap();
+        fs::write(real_dir.join("inside.txt"), b"").unwrap();
+        std::os::unix::fs::symlink(&real_dir, tmp.path().join("link_dir")).unwrap();
+        let mut pane = make_pane(&tmp);
+        pane.load_dir(false).unwrap();
+        // Find and select the symlink entry.
+        let idx = pane
+            .entries
+            .iter()
+            .position(|e| e.name == "link_dir")
+            .unwrap();
+        pane.selected = idx;
+        pane.handle_navigation(NavigationAction::Enter, false);
+        assert_eq!(
+            pane.cwd, real_dir,
+            "entering a dir symlink must navigate to the target"
+        );
+        assert_eq!(pane.entries.len(), 1);
+        assert_eq!(pane.entries[0].name, "inside.txt");
+    }
+
+    // ------------------------------------------------------------------
+    // Virtual scrolling / ensure_visible tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn ensure_visible_scrolls_down_when_cursor_below_window() {
+        let tmp = TempDir::new().unwrap();
+        for i in 0..10 {
+            fs::write(tmp.path().join(format!("{:02}.txt", i)), b"").unwrap();
+        }
+        let mut pane = make_pane(&tmp);
+        pane.load_dir(false).unwrap();
+        // Move cursor past the visible window of 5 rows.
+        pane.selected = 7;
+        pane.scroll_offset = 0;
+        pane.ensure_visible(5);
+        assert!(
+            pane.scroll_offset > 0,
+            "scroll_offset must advance when cursor is below window"
+        );
+        assert!(
+            pane.selected >= pane.scroll_offset,
+            "selected must be >= scroll_offset"
+        );
+        assert!(
+            pane.selected < pane.scroll_offset + 5,
+            "selected must be within the visible window"
+        );
+    }
+
+    #[test]
+    fn ensure_visible_scrolls_up_when_cursor_above_window() {
+        let tmp = TempDir::new().unwrap();
+        for i in 0..10 {
+            fs::write(tmp.path().join(format!("{:02}.txt", i)), b"").unwrap();
+        }
+        let mut pane = make_pane(&tmp);
+        pane.load_dir(false).unwrap();
+        pane.selected = 2;
+        pane.scroll_offset = 5; // cursor is above the window
+        pane.ensure_visible(5);
+        assert_eq!(
+            pane.scroll_offset, 2,
+            "scroll_offset must shrink to bring cursor into view"
+        );
+    }
+
+    #[test]
+    fn ensure_visible_noop_when_cursor_in_window() {
+        let tmp = TempDir::new().unwrap();
+        for i in 0..10 {
+            fs::write(tmp.path().join(format!("{:02}.txt", i)), b"").unwrap();
+        }
+        let mut pane = make_pane(&tmp);
+        pane.load_dir(false).unwrap();
+        pane.selected = 2;
+        pane.scroll_offset = 0;
+        pane.ensure_visible(5);
+        assert_eq!(
+            pane.scroll_offset, 0,
+            "scroll_offset must not change when cursor is already visible"
+        );
     }
 }
