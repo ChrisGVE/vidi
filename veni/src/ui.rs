@@ -13,6 +13,11 @@ use ratatui::{
 ///   1. Directory listing area (fills remaining space, split equally across visible panes)
 ///   2. Status bar / command line (1 line)
 pub fn draw(f: &mut Frame, app: &mut App) {
+    if app.mode == Mode::Help {
+        draw_help(f, app);
+        return;
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -383,6 +388,116 @@ fn draw_normal_status(f: &mut Frame, app: &App, area: Rect) {
             .add_modifier(Modifier::BOLD),
     );
     f.render_widget(status, area);
+}
+
+// ---------------------------------------------------------------------------
+// Help overlay
+// ---------------------------------------------------------------------------
+
+fn draw_help(f: &mut Frame, app: &mut App) {
+    let help_lines = help_content();
+    let total = help_lines.len();
+
+    // Clamp scroll offset.
+    let visible = f.area().height.saturating_sub(2) as usize; // borders
+    if app.help_scroll_offset + visible > total {
+        app.help_scroll_offset = total.saturating_sub(visible);
+    }
+
+    let items: Vec<ListItem> = help_lines
+        .into_iter()
+        .skip(app.help_scroll_offset)
+        .map(|line| ListItem::new(line))
+        .collect();
+
+    let block = Block::default()
+        .title(" Help — press q/Esc to close, j/k to scroll ")
+        .borders(Borders::ALL)
+        .style(Style::default().fg(Color::White));
+
+    let list = List::new(items).block(block);
+    f.render_widget(list, f.area());
+}
+
+fn help_content() -> Vec<Line<'static>> {
+    let section = |title: &'static str| {
+        Line::from(Span::styled(
+            title,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ))
+    };
+    let key = |k: &'static str, desc: &'static str| {
+        Line::from(vec![
+            Span::styled(
+                format!("  {:<16}", k),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(desc),
+        ])
+    };
+    let blank = || Line::from("");
+
+    vec![
+        section("Navigation"),
+        key("j / Down", "Move cursor down"),
+        key("k / Up", "Move cursor up"),
+        key("l / Right / Enter", "Enter directory / follow symlink"),
+        key("h / Left / Bksp", "Go to parent directory"),
+        key("gg", "Go to first entry"),
+        key("G", "Go to last entry"),
+        blank(),
+        section("Pane Management"),
+        key("Tab", "Switch active pane"),
+        key("H (shift)", "Scroll workspace left (niri)"),
+        key("L (shift)", "Scroll workspace right (niri)"),
+        key("Ctrl-h", "Add new pane to the left"),
+        key("Ctrl-l", "Add new pane to the right"),
+        key("Ctrl-w q", "Close active pane"),
+        blank(),
+        section("File Operations"),
+        key("yy", "Yank (copy) file to clipboard"),
+        key("dd", "Cut file to clipboard"),
+        key("p", "Paste from clipboard"),
+        key("u", "Undo last operation"),
+        key("Ctrl-r", "Redo"),
+        key(".", "Repeat last file operation"),
+        blank(),
+        section("Rename"),
+        key("cw / ciw", "Rename file (enter Insert mode)"),
+        key("Enter (insert)", "Confirm rename"),
+        key("Esc (insert)", "Cancel rename"),
+        blank(),
+        section("Selection"),
+        key("v", "Enter Visual mode (range select)"),
+        key("V", "Toggle selection on current entry"),
+        key("Esc (visual)", "Exit Visual mode"),
+        blank(),
+        section("Search"),
+        key("/", "Start forward search"),
+        key("n", "Next search match"),
+        key("N", "Previous search match"),
+        key("Esc (search)", "Cancel search"),
+        blank(),
+        section("Command Mode"),
+        key(":", "Enter command mode"),
+        key(":q", "Quit veni"),
+        key(":cd <path>", "Change directory"),
+        key(":set hidden", "Show hidden files"),
+        key(":set nohidden", "Hide hidden files"),
+        key(":help", "Show this help"),
+        blank(),
+        section("Toggles"),
+        key("gh", "Toggle hidden files"),
+        key("?", "Show this help"),
+        blank(),
+        section("General"),
+        key("q", "Quit"),
+        key("Ctrl-c", "Force quit"),
+    ]
 }
 
 // ---------------------------------------------------------------------------

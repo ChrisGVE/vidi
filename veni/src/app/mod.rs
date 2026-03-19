@@ -25,6 +25,8 @@ pub enum Mode {
     Command,
     /// Incremental filename search.
     Search,
+    /// Help overlay showing all keybindings.
+    Help,
 }
 
 impl Default for Mode {
@@ -41,6 +43,7 @@ impl std::fmt::Display for Mode {
             Mode::Visual => write!(f, "VISUAL"),
             Mode::Command => write!(f, "COMMAND"),
             Mode::Search => write!(f, "SEARCH"),
+            Mode::Help => write!(f, "HELP"),
         }
     }
 }
@@ -108,6 +111,8 @@ pub struct App {
     pub rename_origin: Option<PathBuf>,
     /// Last repeatable file action (for `.` dot-repeat).
     pub last_file_action: Option<KeyAction>,
+    /// Scroll offset for the help overlay.
+    pub help_scroll_offset: usize,
 }
 
 impl App {
@@ -138,6 +143,7 @@ impl App {
             rename_buffer: String::new(),
             rename_origin: None,
             last_file_action: None,
+            help_scroll_offset: 0,
         }
     }
 
@@ -194,6 +200,7 @@ impl App {
             Mode::Command => self.handle_key_command(key),
             Mode::Search => self.handle_key_search(key),
             Mode::Insert => self.handle_key_insert(key),
+            Mode::Help => self.handle_key_help(key),
         }
     }
 
@@ -328,7 +335,39 @@ impl App {
             KeyAction::DotRepeat => self.dot_repeat(),
             KeyAction::ScrollLeft => self.scroll_viewport_left(),
             KeyAction::ScrollRight => self.scroll_viewport_right(),
+            KeyAction::ShowHelp => self.mode = Mode::Help,
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Help mode — any key dismisses the help overlay
+    // ------------------------------------------------------------------
+
+    fn handle_key_help(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => self.help_scroll_down(),
+            KeyCode::Char('k') | KeyCode::Up => self.help_scroll_up(),
+            KeyCode::Char('G') => self.help_scroll_end(),
+            _ => self.mode = Mode::Normal,
+        }
+    }
+
+    /// Scroll offset for the help view.
+    pub fn help_scroll(&self) -> usize {
+        self.help_scroll_offset
+    }
+
+    fn help_scroll_down(&mut self) {
+        self.help_scroll_offset = self.help_scroll_offset.saturating_add(1);
+    }
+
+    fn help_scroll_up(&mut self) {
+        self.help_scroll_offset = self.help_scroll_offset.saturating_sub(1);
+    }
+
+    fn help_scroll_end(&mut self) {
+        // A large number — draw will clamp it.
+        self.help_scroll_offset = 999;
     }
 
     // ------------------------------------------------------------------
@@ -437,6 +476,11 @@ impl App {
     fn execute_command(&mut self, cmd: &str) {
         match cmd {
             "q" => self.should_quit = true,
+            "help" => {
+                self.help_scroll_offset = 0;
+                self.mode = Mode::Help;
+                return;
+            }
             "set hidden" => {
                 self.config.show_hidden = true;
                 let _ = self.load_dir();

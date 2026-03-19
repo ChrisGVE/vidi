@@ -25,6 +25,8 @@ pub enum KeyAction {
     ScrollLeft,
     /// Shift-L: scroll viewport right (show next pane).
     ScrollRight,
+    /// Show help overlay.
+    ShowHelp,
 }
 
 /// Resolves a raw key character (and a pending first character) into a
@@ -79,6 +81,7 @@ pub fn resolve(ch: char, pending: &mut Option<char>) -> Option<KeyAction> {
             '.' => Some(KeyAction::DotRepeat),
             'H' => Some(KeyAction::ScrollLeft),
             'L' => Some(KeyAction::ScrollRight),
+            '?' => Some(KeyAction::ShowHelp),
             // First key of a potential two-key sequence.
             'g' | 'd' | 'y' | 'c' => {
                 *pending = Some(ch);
